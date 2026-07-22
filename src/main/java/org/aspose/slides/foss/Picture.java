@@ -103,10 +103,27 @@ public final class Picture implements ISlidesPicture, ISlideComponent, IPresenta
             throw new IllegalArgumentException("Image must not be null");
         }
         this.cachedImage = value;
-        // Set embed reference on the blip element.
-        // When no slide part context is available, mark with a pending reference.
+
+        OpcPackage pkg = this.opcPackage;
+        String partName = this.slidePartName;
+        if ((pkg == null || partName == null || partName.isEmpty())
+                && parentSlide instanceof Slide slide) {
+            pkg = ((Presentation) slide.getPresentation()).getPackage();
+            partName = slide.getSlidePartUri();
+        }
+        if (pkg != null && partName != null && !partName.isEmpty()) {
+            setBlipImage(blip, pkg, partName, value);
+            return;
+        }
+
+        // Fallback when no OPC context is available
         String embedId = blip.getAttributeNS(NS_R, "embed");
-        if (embedId == null || embedId.isEmpty()) {
+        if (embedId == null || embedId.isEmpty()
+                || "rId_img".equals(embedId)
+                || "rId_pending".equals(embedId)) {
+            if (value instanceof PPImage img && img.getPartName() != null) {
+                blip.setAttribute("_pendingPartName", img.getPartName());
+            }
             blip.setAttributeNS(NS_R, "r:embed", "rId_pending");
         }
     }

@@ -149,6 +149,31 @@ public final class RelsHelper {
     }
 
     /**
+     * Removes a relationship by ID.
+     *
+     * @param id the relationship ID
+     * @return {@code true} if removed
+     */
+    public boolean removeRelationship(String id) {
+        if (id == null || !relationships.containsKey(id)) {
+            return false;
+        }
+        relationships.remove(id);
+        NodeList relElements = root.getElementsByTagNameNS(REL_NS, "Relationship");
+        if (relElements.getLength() == 0) {
+            relElements = root.getElementsByTagName("Relationship");
+        }
+        for (int i = 0; i < relElements.getLength(); i++) {
+            Element el = (Element) relElements.item(i);
+            if (id.equals(el.getAttribute("Id"))) {
+                root.removeChild(el);
+                break;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Saves the relationships back to the package.
      */
     public void save() {

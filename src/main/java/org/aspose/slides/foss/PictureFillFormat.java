@@ -1,5 +1,6 @@
 package org.aspose.slides.foss;
 
+import org.aspose.slides.foss.internal.pptx.OpcPackage;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -240,7 +241,13 @@ public final class PictureFillFormat extends PVIObject implements IPictureFillFo
             return null;
         }
         var picture = new Picture();
-        picture.initInternal(blip, parentSlide);
+        if (parentSlide instanceof Slide slide) {
+            OpcPackage pkg = ((Presentation) slide.getPresentation()).getPackage();
+            String partName = slide.getSlidePartUri();
+            picture.initInternal(blip, pkg, partName, parentSlide);
+        } else {
+            picture.initInternal(blip, parentSlide);
+        }
         return picture;
     }
 

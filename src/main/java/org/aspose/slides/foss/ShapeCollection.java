@@ -1,5 +1,6 @@
 package org.aspose.slides.foss;
 
+import org.aspose.slides.foss.internal.pptx.OpcPackage;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -47,6 +48,9 @@ public final class ShapeCollection implements IShapeCollection, Iterable<IShape>
     private Element spTree;
     private Runnable saveCallback;
     private IGroupShape parentGroup;
+    private OpcPackage opcPackage;
+    private String slidePartName;
+    private IBaseSlide parentSlide;
 
     /** Lazily-loaded shapes cache; {@code null} means not yet loaded. */
     private List<IShape> shapesCache;
@@ -69,6 +73,19 @@ public final class ShapeCollection implements IShapeCollection, Iterable<IShape>
     public ShapeCollection(Element spTree, Runnable saveCallback) {
         this.spTree = spTree;
         this.saveCallback = saveCallback;
+    }
+
+    /**
+     * Binds this collection to its slide OPC context so picture embeds get real relationships.
+     *
+     * @param opcPackage    the presentation package
+     * @param slidePartName slide part URI (e.g. {@code ppt/slides/slide1.xml})
+     * @param parentSlide   owning slide
+     */
+    public void setPackageContext(OpcPackage opcPackage, String slidePartName, IBaseSlide parentSlide) {
+        this.opcPackage = opcPackage;
+        this.slidePartName = slidePartName;
+        this.parentSlide = parentSlide;
     }
 
     // ── Two-phase initialization ────────────────────────────────────────
@@ -568,10 +585,9 @@ public final class ShapeCollection implements IShapeCollection, Iterable<IShape>
         nvPicPr.appendChild(doc.createElementNS(NS_P, "p:nvPr"));
         pic.appendChild(nvPicPr);
 
-        // blipFill
+        // blipFill — leave r:embed empty; setImage / setBlipImage wires a real relationship
         Element blipFill = doc.createElementNS(NS_P, "p:blipFill");
         Element blip = doc.createElementNS(NS_A, "a:blip");
-        blip.setAttributeNS(NS_R, "r:embed", "rId_img");
         blipFill.appendChild(blip);
         Element stretch = doc.createElementNS(NS_A, "a:stretch");
         stretch.appendChild(doc.createElementNS(NS_A, "a:fillRect"));
@@ -605,11 +621,15 @@ public final class ShapeCollection implements IShapeCollection, Iterable<IShape>
         frame.setParentShapes(this);
         elementToShape.put(pic, frame);
 
-        // Set the image via the picture format
+        // Set the image via OPC relationship when package context is available
         if (image != null) {
-            IPictureFillFormat pff = frame.getPictureFormat();
-            if (pff != null) {
-                pff.getPicture().setImage(image);
+            if (opcPackage != null && slidePartName != null && !slidePartName.isEmpty()) {
+                Picture.setBlipImage(blip, opcPackage, slidePartName, image);
+            } else {
+                IPictureFillFormat pff = frame.getPictureFormat();
+                if (pff != null) {
+                    pff.getPicture().setImage(image);
+                }
             }
         }
 

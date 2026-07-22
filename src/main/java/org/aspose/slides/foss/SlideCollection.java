@@ -1,5 +1,6 @@
 package org.aspose.slides.foss;
 
+import org.aspose.slides.foss.internal.pptx.ContentTypesManager;
 import org.aspose.slides.foss.internal.pptx.OpcPackage;
 import org.aspose.slides.foss.internal.pptx.PresentationPart;
 import org.aspose.slides.foss.internal.pptx.RelsHelper;
@@ -28,6 +29,9 @@ public final class SlideCollection implements ISlideCollection {
 
     private static final String REL_TYPE_SLIDE =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+
+    private static final String REL_TYPE_SLIDE_LAYOUT =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
 
     private final List<Slide> slides = new ArrayList<>();
     private Presentation presentation;
@@ -217,6 +221,50 @@ public final class SlideCollection implements ISlideCollection {
 
     @Override
     public void removeAt(int index) {
+        Slide slide = slides.get(index);
+        String partName = slide.getSlidePartUri();
+        if (opcPackage != null && partName != null && !partName.isEmpty()) {
+            PresentationPart presPart = getEffectivePresentationPart();
+            var presRels = new RelsHelper(opcPackage, PresentationPart.PART_NAME);
+            String expectedTarget = partName.startsWith("ppt/")
+                    ? partName.substring("ppt/".length())
+                    : partName;
+
+            String relIdToRemove = null;
+            for (RelsHelper.RelEntry rel : presRels.getAllRelationships()) {
+                if (!REL_TYPE_SLIDE.equals(rel.type())) {
+                    continue;
+                }
+                String target = rel.target() == null ? "" : rel.target().replaceFirst("^/+", "");
+                if (target.equals(expectedTarget) || target.equals(partName)
+                        || target.endsWith("/" + expectedTarget)) {
+                    relIdToRemove = rel.id();
+                    break;
+                }
+            }
+
+            if (relIdToRemove != null) {
+                Integer slideId = null;
+                for (SlideReference ref : presPart.slideReferences()) {
+                    if (relIdToRemove.equals(ref.getRelId())) {
+                        slideId = ref.getSlideId();
+                        break;
+                    }
+                }
+                if (slideId != null) {
+                    presPart.removeSlideReference(slideId);
+                    presPart.save();
+                }
+                presRels.removeRelationship(relIdToRemove);
+                presRels.save();
+            }
+
+            opcPackage.removePart(partName);
+            opcPackage.removePart(RelsHelper.getRelsPartName(partName));
+            var ct = new ContentTypesManager(opcPackage);
+            ct.removeOverride(partName);
+            ct.save();
+        }
         slides.remove(index);
     }
 
@@ -371,9 +419,18 @@ public final class SlideCollection implements ISlideCollection {
             if (sourcePackage == pkg) {
                 // Same presentation — use the same layout
                 destLayoutPartName = resolveLayoutPartName(sourceLayout);
+                if (destLayoutPartName == null) {
+                    destLayoutPartName = resolveLayoutPartNameFromRels(sourcePackage, sourcePartName)
+                            .orElse(null);
+                }
             } else {
-                // Different presentation — clone the master slide chain
-                destLayoutPartName = cloneMasterChainForSlide(sourceSlide, sourceLayout);
+                // Different presentation — prefer an already-present matching layout
+                // (common for save/reopen "like template" destinations). MasterSlideCollection
+                // addClone is a shallow stub without OPC part names, so cloning masters would
+                // incorrectly fall back to the first layout (often the cover/title layout).
+                destLayoutPartName = findExistingMatchingLayoutPart(
+                        pkg, sourcePackage, sourcePartName, sourceLayout)
+                        .orElseGet(() -> cloneMasterChainForSlide(sourceSlide, sourceLayout));
             }
         }
 
@@ -559,6 +616,92 @@ public final class SlideCollection implements ISlideCollection {
     }
 
     /**
+     * Finds a layout already present in {@code destPackage} that matches the source slide.
+     *
+     * <p>Order: same part path as the source layout relationship, then layout name, then type.
+     * This avoids relying on {@code MasterSlideCollection.addClone}, which does not create real
+     * OPC layout parts and therefore cannot resolve part names.</p>
+     */
+    Optional<String> findExistingMatchingLayoutPart(
+            OpcPackage destPackage,
+            OpcPackage sourcePackage,
+            String sourceSlidePartName,
+            ILayoutSlide sourceLayout
+    ) {
+        String sourceLayoutPart = resolveLayoutPartName(sourceLayout);
+        if (sourceLayoutPart == null) {
+            sourceLayoutPart = resolveLayoutPartNameFromRels(sourcePackage, sourceSlidePartName)
+                    .orElse(null);
+        }
+        if (sourceLayoutPart != null && destPackage.hasPart(sourceLayoutPart)) {
+            return Optional.of(sourceLayoutPart);
+        }
+
+        if (sourceLayout != null) {
+            Optional<String> byName = findLayoutFromLayoutSlides(sourceLayout);
+            if (byName.isPresent() && destPackage.hasPart(byName.get())) {
+                return byName;
+            }
+            Optional<String> byType = findLayoutByType(sourceLayout);
+            if (byType.isPresent() && destPackage.hasPart(byType.get())) {
+                return byType;
+            }
+            Optional<String> byScan = findLayoutPartByNameInPackage(destPackage, sourceLayout.getName());
+            if (byScan.isPresent()) {
+                return byScan;
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private static Optional<String> resolveLayoutPartNameFromRels(
+            OpcPackage sourcePackage,
+            String sourceSlidePartName
+    ) {
+        if (sourcePackage == null || sourceSlidePartName == null) {
+            return Optional.empty();
+        }
+        var rels = new RelsHelper(sourcePackage, sourceSlidePartName);
+        for (var rel : rels.getAllRelationships()) {
+            if (REL_TYPE_SLIDE_LAYOUT.equals(rel.type())) {
+                String resolved = SlidePart.resolveTargetStatic(sourceSlidePartName, rel.target());
+                if (resolved != null && !resolved.isBlank()) {
+                    return Optional.of(resolved);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> findLayoutPartByNameInPackage(OpcPackage destPackage, String layoutName) {
+        if (layoutName == null || layoutName.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            IGlobalLayoutSlideCollection globalLayouts = presentation.getLayoutSlides();
+            if (globalLayouts != null) {
+                for (int i = 0; i < globalLayouts.size(); i++) {
+                    ILayoutSlide layout = globalLayouts.get(i);
+                    try {
+                        if (layoutName.equals(layout.getName())) {
+                            String partName = resolveLayoutPartName(layout);
+                            if (partName != null && destPackage.hasPart(partName)) {
+                                return Optional.of(partName);
+                            }
+                        }
+                    } catch (UnsupportedOperationException ignored) {
+                        // skip
+                    }
+                }
+            }
+        } catch (UnsupportedOperationException ignored) {
+            // skip
+        }
+        return Optional.empty();
+    }
+
+    /**
      * Clones the master slide chain for a slide being cloned from another presentation.
      *
      * <p>This clones the source layout's master slide (including its layouts)
@@ -616,7 +759,10 @@ public final class SlideCollection implements ISlideCollection {
                 if (sourceType != null) {
                     try {
                         if (clonedLayout.getLayoutType() == sourceType) {
-                            return resolveLayoutPartName(clonedLayout);
+                            String partName = resolveLayoutPartName(clonedLayout);
+                            if (partName != null) {
+                                return partName;
+                            }
                         }
                     } catch (UnsupportedOperationException ignored) {
                         // skip
@@ -626,7 +772,10 @@ public final class SlideCollection implements ISlideCollection {
                 if (sourceName != null) {
                     try {
                         if (sourceName.equals(clonedLayout.getName())) {
-                            return resolveLayoutPartName(clonedLayout);
+                            String partName = resolveLayoutPartName(clonedLayout);
+                            if (partName != null) {
+                                return partName;
+                            }
                         }
                     } catch (UnsupportedOperationException ignored) {
                         // skip
@@ -634,9 +783,25 @@ public final class SlideCollection implements ISlideCollection {
                 }
             }
 
-            // Fallback: first layout from cloned master
+            // Shallow addClone layouts have no OPC part names — match existing dest layouts
+            if (sourceName != null) {
+                Optional<String> existing = findLayoutPartByNameInPackage(
+                        getEffectivePackage(), sourceName);
+                if (existing.isPresent()) {
+                    return existing.get();
+                }
+            }
+            Optional<String> byType = findLayoutByType(sourceLayout);
+            if (byType.isPresent()) {
+                return byType.get();
+            }
+
+            // Fallback: first layout from cloned master only if it has a real part
             if (!clonedLayouts.isEmpty()) {
-                return resolveLayoutPartName(clonedLayouts.get(0));
+                String partName = resolveLayoutPartName(clonedLayouts.get(0));
+                if (partName != null) {
+                    return partName;
+                }
             }
         }
 

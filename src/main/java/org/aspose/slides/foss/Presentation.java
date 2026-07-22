@@ -67,11 +67,13 @@ public final class Presentation implements IPresentation {
         masters = new MasterSlideCollection();
         globalLayoutSlides = new GlobalLayoutSlideCollection();
         initDefaultMasterAndLayout();
+        // Bind SlideCollection to the OPC package so addClone/removeAt update
+        // presentation.xml, relationships, and content types (not just in-memory list).
         slides = new SlideCollection();
-        slides.setPresentation(this);
-        Slide initialSlide = new Slide(this, 0);
-        initialSlide.setLayoutSlide(globalLayoutSlides.get(0));
-        slides.add(initialSlide);
+        slides.initInternal(this, pkg, new PresentationPart(pkg), this::resolveLayoutSlide);
+        if (slides.size() > 0) {
+            slides.get(0).setLayoutSlide(globalLayoutSlides.get(0));
+        }
         notesSize = new NotesSize(new SizeF(540f, 720f));
         currentDateTime = LocalDateTime.now();
         sourceFormat = SourceFormat.PPTX;
@@ -113,10 +115,11 @@ public final class Presentation implements IPresentation {
         masters = new MasterSlideCollection();
         globalLayoutSlides = new GlobalLayoutSlideCollection();
         initDefaultMasterAndLayout();
+        // Must call initInternal so opcPackage is set; otherwise addClone falls back to
+        // createSlide() which writes slide XML without registering it in the package.
         slides = new SlideCollection();
-        slides.setPresentation(this);
+        slides.initInternal(this, pkg, new PresentationPart(pkg), this::resolveLayoutSlide);
         notesSize = new NotesSize(new SizeF(540f, 720f));
-        loadSlides();
         loadCommentAuthors();
         loadComments();
         loadFirstSlideNumber();
@@ -312,20 +315,6 @@ public final class Presentation implements IPresentation {
     }
 
     // ---- Load helpers ----
-
-    private void loadSlides() {
-        // Count slide parts
-        int slideCount = 0;
-        for (String name : pkg.getPartNames()) {
-            if (name.matches("ppt/slides/slide\\d+\\.xml")) {
-                slideCount++;
-            }
-        }
-        if (slideCount == 0) slideCount = 1;
-        for (int i = 0; i < slideCount; i++) {
-            slides.add(new Slide(this, i));
-        }
-    }
 
     private void loadFirstSlideNumber() {
         var presPart = new PresentationPart(pkg);

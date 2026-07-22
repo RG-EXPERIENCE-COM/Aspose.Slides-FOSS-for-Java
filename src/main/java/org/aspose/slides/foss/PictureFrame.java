@@ -114,7 +114,9 @@ public final class PictureFrame extends GeometryShape implements IPictureFrame {
         if (xmlElement == null) return null;
         Element blipFill = findChild(xmlElement, NS_P, "blipFill");
         if (blipFill == null) return null;
-        return new PictureFillFormat(blipFill, saveCallback);
+        PictureFillFormat format = new PictureFillFormat(blipFill, saveCallback);
+        format.initInternal(blipFill, getSlide(), saveCallback);
+        return format;
     }
 
     // --- Relative scale ---
