@@ -75,11 +75,35 @@ public final class Paragraph implements IParagraph, ISlideComponent, IPresentati
         this.slidePart = slidePart;
         this.parentSlide = parentSlide;
         this.portions = new PortionCollection(pElement, this::save);
+        this.paragraphFormat = null;
         loadPortions();
         if (slidePart != null && parentSlide != null) {
             Picture.flushPendingBlipImages(pElement, parentSlide);
         }
         return this;
+    }
+
+    /**
+     * Rebinds this paragraph after its {@code <a:p>} node was imported into
+     * a text-body document (used by {@link ParagraphCollection#add}).
+     */
+    void attachToTextBody(Element pElement, Element txbodyElement, Runnable saveCallback,
+                          Object slidePart, IBaseSlide parentSlide) {
+        this.pElement = pElement;
+        this.txbodyElement = txbodyElement;
+        this.saveCallback = saveCallback;
+        this.slidePart = slidePart;
+        this.parentSlide = parentSlide;
+        this.portions = new PortionCollection(pElement, this::save);
+        this.paragraphFormat = null;
+        loadPortions();
+    }
+
+    /**
+     * Attaches a save callback without replacing the backing element.
+     */
+    void attachSaveCallback(Runnable saveCallback) {
+        this.saveCallback = saveCallback;
     }
 
     private void loadPortions() {

@@ -104,12 +104,16 @@ public final class TextFrame implements ITextFrame {
 
     private void loadParagraphs() {
         paragraphs = new ParagraphCollection();
-        if (txBodyElement == null) return;
+        paragraphs.bind(txBodyElement, this::save, parentSlide);
+        if (txBodyElement == null) {
+            return;
+        }
         NodeList children = txBodyElement.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             if (children.item(i) instanceof Element el
                     && NS_A.equals(el.getNamespaceURI())
                     && "p".equals(el.getLocalName())) {
+                // Already a DOM child — add() will rebind without re-inserting.
                 paragraphs.add(new Paragraph(el, this::save));
             }
         }

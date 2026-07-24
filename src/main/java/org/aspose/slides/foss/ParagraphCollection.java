@@ -11,9 +11,10 @@ import java.util.List;
 /**
  * Represents a collection of paragraphs.
  *
- * <p>When backed by an OOXML {@code <a:txBody>} element, paragraphs are
- * resolved dynamically from the XML on each access. Otherwise, the
- * collection operates on an in-memory list.</p>
+ * <p>When bound to an OOXML {@code <a:txBody>} element, mutations
+ * ({@link #add}, {@link #insert}, {@link #remove}, {@link #removeAt},
+ * {@link #clear}) are synchronised to the DOM — same contract as
+ * {@link PortionCollection} for runs.</p>
  */
 public final class ParagraphCollection extends BaseCollection<IParagraph>
         implements IParagraphCollection, ISlideComponent, IPresentationComponent {
@@ -26,6 +27,8 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
     private Element txbodyElement;
     private Object slidePart;
     private IBaseSlide parentSlide;
+    private Runnable saveCallback;
+    private boolean dynamic;
 
     /**
      * Creates an empty ParagraphCollection.
@@ -47,8 +50,9 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
     /**
      * Initialises this collection from an OOXML text-body element.
      *
-     * <p>After this call, {@link #getParagraphs()} dynamically resolves
-     * {@code <a:p>} children from the supplied element.</p>
+     * <p>After this call, the collection operates in <em>dynamic</em> mode:
+     * reads resolve {@code <a:p>} children from the supplied element on each
+     * access.</p>
      *
      * @param txbodyElement the {@code <a:txBody>} XML element
      * @param slidePart     the OPC slide part that owns the paragraphs, or {@code null}
@@ -61,34 +65,58 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
         this.txbodyElement = txbodyElement;
         this.slidePart = slidePart;
         this.parentSlide = parentSlide;
+        this.dynamic = true;
+        return this;
+    }
+
+    /**
+     * Binds this collection to a text-body element for mutation sync.
+     *
+     * <p>Unlike {@link #initInternal}, this keeps an in-memory list as the
+     * working set and writes add/remove/clear through to the DOM (used by
+     * {@link TextFrame}).</p>
+     *
+     * @param txbodyElement the {@code <a:txBody>} XML element; may be {@code null}
+     * @param saveCallback  callback invoked after DOM mutations; may be {@code null}
+     * @param parentSlide   the parent slide; may be {@code null}
+     * @return this collection
+     */
+    ParagraphCollection bind(Element txbodyElement, Runnable saveCallback, IBaseSlide parentSlide) {
+        this.txbodyElement = txbodyElement;
+        this.saveCallback = saveCallback;
+        this.parentSlide = parentSlide;
+        this.dynamic = false;
         return this;
     }
 
     /**
      * Builds and returns the list of paragraphs.
      *
-     * <p>When the collection is backed by an XML element, paragraphs are
-     * resolved from the {@code <a:p>} children of the text-body element
-     * on every call. Otherwise, returns the in-memory list.</p>
+     * <p>When the collection is in dynamic mode, paragraphs are resolved from
+     * the {@code <a:p>} children of the text-body element on every call.
+     * Otherwise returns the in-memory list.</p>
      *
      * @return a list of paragraphs
      */
     public List<IParagraph> getParagraphs() {
-        if (txbodyElement == null) {
-            return List.copyOf(paragraphs);
-        }
-        List<IParagraph> result = new ArrayList<>();
-        NodeList children = txbodyElement.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++) {
-            if (children.item(i) instanceof Element el
-                    && NS_A.equals(el.getNamespaceURI())
-                    && "p".equals(el.getLocalName())) {
-                Paragraph para = new Paragraph();
-                para.initInternal(el, txbodyElement, slidePart, parentSlide);
-                result.add(para);
+        if (dynamic && txbodyElement != null) {
+            List<IParagraph> result = new ArrayList<>();
+            NodeList children = txbodyElement.getChildNodes();
+            for (int i = 0; i < children.getLength(); i++) {
+                if (children.item(i) instanceof Element el
+                        && NS_A.equals(el.getNamespaceURI())
+                        && "p".equals(el.getLocalName())) {
+                    Paragraph para = new Paragraph();
+                    para.initInternal(el, txbodyElement, slidePart, parentSlide);
+                    if (saveCallback != null) {
+                        para.attachSaveCallback(saveCallback);
+                    }
+                    result.add(para);
+                }
             }
+            return result;
         }
-        return result;
+        return List.copyOf(paragraphs);
     }
 
     /**
@@ -98,6 +126,58 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
      */
     void setParentSlide(IBaseSlide parentSlide) {
         this.parentSlide = parentSlide;
+    }
+
+    private void save() {
+        if (saveCallback != null) {
+            saveCallback.run();
+        }
+    }
+
+    private Element adoptElement(Element elem) {
+        if (txbodyElement != null && elem.getOwnerDocument() != txbodyElement.getOwnerDocument()) {
+            return (Element) txbodyElement.getOwnerDocument().importNode(elem, true);
+        }
+        return elem;
+    }
+
+    private List<Element> findParagraphElements() {
+        List<Element> result = new ArrayList<>();
+        if (txbodyElement == null) {
+            return result;
+        }
+        NodeList children = txbodyElement.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (children.item(i) instanceof Element el
+                    && NS_A.equals(el.getNamespaceURI())
+                    && "p".equals(el.getLocalName())) {
+                result.add(el);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Attach a paragraph element to {@code txbodyElement}, rebinding the
+     * {@link Paragraph} wrapper to the adopted node.
+     */
+    private void syncParagraphIntoDom(Paragraph p, int insertBeforeIndex) {
+        Element pElem = p.getPElement();
+        if (pElem == null || txbodyElement == null) {
+            return;
+        }
+        if (pElem.getParentNode() == txbodyElement) {
+            p.attachToTextBody(pElem, txbodyElement, saveCallback, slidePart, parentSlide);
+            return;
+        }
+        pElem = adoptElement(pElem);
+        List<Element> existing = findParagraphElements();
+        if (insertBeforeIndex < 0 || insertBeforeIndex >= existing.size()) {
+            txbodyElement.appendChild(pElem);
+        } else {
+            txbodyElement.insertBefore(pElem, existing.get(insertBeforeIndex));
+        }
+        p.attachToTextBody(pElem, txbodyElement, saveCallback, slidePart, parentSlide);
     }
 
     @Override
@@ -150,11 +230,19 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
 
     @Override
     public void add(IParagraph value) {
+        if (txbodyElement != null && value instanceof Paragraph p) {
+            syncParagraphIntoDom(p, -1);
+            save();
+        }
         paragraphs.add(value);
     }
 
     @Override
     public void insert(int index, IParagraph value) {
+        if (txbodyElement != null && value instanceof Paragraph p) {
+            syncParagraphIntoDom(p, index);
+            save();
+        }
         if (index >= paragraphs.size()) {
             paragraphs.add(value);
         } else {
@@ -174,19 +262,60 @@ public final class ParagraphCollection extends BaseCollection<IParagraph>
 
     @Override
     public void clear() {
+        if (txbodyElement != null) {
+            for (Element el : findParagraphElements()) {
+                txbodyElement.removeChild(el);
+            }
+            save();
+        }
         paragraphs.clear();
     }
 
     @Override
     public void removeAt(int index) {
-        if (index >= 0 && index < paragraphs.size()) {
+        List<IParagraph> view = getParagraphs();
+        if (index < 0 || index >= view.size()) {
+            return;
+        }
+        if (txbodyElement != null) {
+            List<Element> elements = findParagraphElements();
+            if (index < elements.size()) {
+                txbodyElement.removeChild(elements.get(index));
+                save();
+            }
+        }
+        if (!dynamic && index < paragraphs.size()) {
             paragraphs.remove(index);
         }
     }
 
     @Override
     public boolean remove(IParagraph item) {
-        return paragraphs.remove(item);
+        int idx = paragraphs.indexOf(item);
+        if (idx < 0 && !dynamic) {
+            return false;
+        }
+        if (dynamic) {
+            idx = getParagraphs().indexOf(item);
+            if (idx < 0) {
+                return false;
+            }
+            removeAt(idx);
+            return true;
+        }
+        if (txbodyElement != null) {
+            List<Element> elements = findParagraphElements();
+            if (idx < elements.size()) {
+                txbodyElement.removeChild(elements.get(idx));
+                save();
+            } else if (item instanceof Paragraph p && p.getPElement() != null
+                    && p.getPElement().getParentNode() == txbodyElement) {
+                txbodyElement.removeChild(p.getPElement());
+                save();
+            }
+        }
+        paragraphs.remove(idx);
+        return true;
     }
 
     @Override
