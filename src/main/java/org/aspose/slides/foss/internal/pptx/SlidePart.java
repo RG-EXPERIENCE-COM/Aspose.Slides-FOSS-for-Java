@@ -217,36 +217,7 @@ public final class SlidePart {
     // ── Private helpers ──────────────────────────────────────────────────
 
     private static void updateRidReferencesRecursive(Element element, Map<String, String> ridMapping) {
-        // Check r:id attribute
-        String rId = element.getAttributeNS(NS_R, "id");
-        if (!rId.isEmpty() && ridMapping.containsKey(rId)) {
-            element.setAttributeNS(NS_R, "r:id", ridMapping.get(rId));
-        }
-
-        // Check r:embed attribute
-        String rEmbed = element.getAttributeNS(NS_R, "embed");
-        if (!rEmbed.isEmpty() && ridMapping.containsKey(rEmbed)) {
-            element.setAttributeNS(NS_R, "r:embed", ridMapping.get(rEmbed));
-        }
-
-        // Check r:link attribute
-        String rLink = element.getAttributeNS(NS_R, "r:link");
-        if (!rLink.isEmpty() && ridMapping.containsKey(rLink)) {
-            element.setAttributeNS(NS_R, "r:link", ridMapping.get(rLink));
-        }
-
-        // Also check non-namespaced attributes that might contain rIds
-        NamedNodeMap attrs = element.getAttributes();
-        for (int i = 0; i < attrs.getLength(); i++) {
-            Node attr = attrs.item(i);
-            if ("r:id".equals(attr.getNodeName()) || "r:embed".equals(attr.getNodeName())
-                    || "r:link".equals(attr.getNodeName())) {
-                String val = attr.getNodeValue();
-                if (ridMapping.containsKey(val)) {
-                    attr.setNodeValue(ridMapping.get(val));
-                }
-            }
-        }
+        remapRelationshipAttributes(element, ridMapping);
 
         // Recurse into children
         NodeList children = element.getChildNodes();
@@ -256,6 +227,46 @@ public final class SlidePart {
                 updateRidReferencesRecursive(childElem, ridMapping);
             }
         }
+    }
+
+    /**
+     * Remaps every relationship-carrying attribute of {@code element}, each exactly once.
+     *
+     * <p>Cloning renumbers relationship ids in source {@code .rels} document order, which is not
+     * necessarily numeric order, so the mapping can contain cycles (e.g. {@code rId4 → rId5}
+     * together with {@code rId5 → rId4}). Applying it twice to the same attribute walks the cycle
+     * back to the original id while the relationship targets have already been reassigned, which
+     * silently swaps the images of two picture frames.</p>
+     */
+    private static void remapRelationshipAttributes(Element element, Map<String, String> ridMapping) {
+        NamedNodeMap attrs = element.getAttributes();
+        for (int i = 0; i < attrs.getLength(); i++) {
+            Node attr = attrs.item(i);
+            if (!isRelationshipAttribute(attr)) {
+                continue;
+            }
+            String mapped = ridMapping.get(attr.getNodeValue());
+            if (mapped != null) {
+                attr.setNodeValue(mapped);
+            }
+        }
+    }
+
+    /**
+     * Tells whether {@code attr} is an {@code r:id} / {@code r:embed} / {@code r:link} reference.
+     * Falls back to the {@code r:} prefix for documents parsed without namespace awareness.
+     */
+    private static boolean isRelationshipAttribute(Node attr) {
+        String namespace = attr.getNamespaceURI();
+        if (namespace != null) {
+            return NS_R.equals(namespace) && isRelationshipAttributeName(attr.getLocalName());
+        }
+        String name = attr.getNodeName();
+        return name.startsWith("r:") && isRelationshipAttributeName(name.substring(2));
+    }
+
+    private static boolean isRelationshipAttributeName(String localName) {
+        return "id".equals(localName) || "embed".equals(localName) || "link".equals(localName);
     }
 
     private static String getRelsPartName(String partName) {
